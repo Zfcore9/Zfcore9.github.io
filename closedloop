@@ -1,0 +1,123 @@
+import logging
+import yfinance as yf
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# ⚠️ Ganti Token Bot Telegram kamu di sini
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+
+# Tombol Keyboard Utama
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [["⚡ Analisis BTC", "⚡ Analisis ETH"], ["⚡ Analisis Gold (XAUUSD)", "📖 Bantuan"]],
+    resize_keyboard=True
+)
+
+def analisa_pasar_realtime(ticker_symbol):
+    """Fungsi narik data harga real-time & hitung Sinyal, Entry, TP, dan SL"""
+    try:
+        # Download data harga terbaru (interval 15 menit)
+        data = yf.download(tickers=ticker_symbol, period="1d", interval="15m", progress=False)
+        
+        if data.empty or len(data) < 14:
+            return "❌ Gagal mengambil data pasar. Pastikan simbol benar."
+
+        # Ambil harga paling akhir (Real-Time)
+        harga_sekarang = float(data['Close'].iloc[-1])
+        
+        # Hitung Indikator Sederhana: SMA (Moving Average) & RSI
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = float((100 - (100 / (1 + rs))).iloc[-1])
+        
+        sma_20 = float(data['Close'].rolling(window=20).mean().iloc[-1])
+
+        # Logika Sinyal Eksplisit (Buy / Sell / Wait)
+        if rsi < 35 and harga_sekarang > sma_20:
+            sinyal = "🟢 BUY (LONG)"
+            jarak_aman_pct = 0.015 # 1.5% Stop Loss
+            tp_pct = 0.03          # 3.0% Take Profit
+        elif rsi > 65 and harga_sekarang < sma_20:
+            sinyal = "🔴 SELL (SHORT)"
+            jarak_aman_pct = 0.015
+            tp_pct = 0.03
+        else:
+            sinyal = "🟡 WAIT / NETRAL"
+            jarak_aman_pct = 0.01
+            tp_pct = 0.02
+
+        # Hitung Angka Eksekusi, Target TP, dan SL (Jarak Aman)
+        entry_price = harga_sekarang
+        
+        if "BUY" in sinyal:
+            sl_price = entry_price * (1 - jarak_aman_pct)
+            tp_price = entry_price * (1 + tp_pct)
+        elif "SELL" in sinyal:
+            sl_price = entry_price * (1 + jarak_aman_pct)
+            tp_price = entry_price * (1 - tp_pct)
+        else:
+            sl_price = entry_price * (1 - jarak_aman_pct)
+            tp_price = entry_price * (1 + tp_pct)
+
+        # Output Pesan Format Sinyal Trading
+        pesan = (
+            f"📊 *ANALISIS REAL-TIME: {ticker_symbol}*\n"
+            f"----------------------------------\n"
+            f"💵 *Harga Saat Ini:* `${harga_sekarang:,.2f}`\n"
+            f"📈 *Indikator RSI:* `{rsi:.1f}`\n\n"
+            f"🎯 *Rekomendasi:* {sinyal}\n"
+            f"📍 *Spot Entry:* `${entry_price:,.2f}`\n"
+            f"🎯 *Target TP (Profit):* `${tp_price:,.2f}`\n"
+            f"🛡️ *Stop Loss (Jarak Aman):* `${sl_price:,.2f}`\n"
+            f"----------------------------------\n"
+            f"💡 *Catatan:* Eksekusi sesuai Money Management!"
+        )
+        return pesan
+
+    except Exception as e:
+        return f"⚠️ Terjadi kesalahan analisis: {str(e)}"
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text = "🤖 *Bot Analisis Real-Time Siap!*\nKlik tombol di bawah untuk analisa instan:"
+    await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=MAIN_KEYBOARD)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    # Pemetaan tombol ke simbol yahoo finance
+    if text == "⚡ Analisis BTC":
+        ticker = "BTC-USD"
+    elif text == "⚡ Analisis ETH":
+        ticker = "ETH-USD"
+    elif text == "⚡ Analisis Gold (XAUUSD)":
+        ticker = "GC=F"
+    else:
+        # Jika user mengetik simbol koin/saham lain secara bebas (misal: SOL-USD, BBCA.JK)
+        ticker = text.strip().upper()
+
+    await update.message.reply_text(f"⏳ Sedang mengambil data pasar real-time `{ticker}`...", parse_mode='Markdown')
+    
+    # Jalankan Analisis
+    hasil = analisa_pasar_realtime(ticker)
+    await update.message.reply_text(hasil, parse_mode='Markdown', reply_markup=MAIN_KEYBOARD)
+
+def main():
+    print("🤖 Bot Real-Time Signal Running...")
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
